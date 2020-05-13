@@ -3,6 +3,7 @@
 """
 
 import sys
+import time
 import pandas as pd
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
@@ -10,7 +11,10 @@ from tensorflow.keras.optimizers import RMSprop
 from tensorflow.keras.utils import to_categorical
 import tensorflow.keras.wrappers.scikit_learn as ksl
 from sklearn.model_selection import train_test_split, cross_val_score
+from imblearn.under_sampling import ClusterCentroids
 from sklearn.metrics import accuracy_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 INPUT_FILE = "input.csv"
@@ -95,22 +99,95 @@ rates when VERBOSE is True."""
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
     if verbose:
         print("> Performing cross validation...")
+        (X_resampled, y_resampled) = fix_imbalance(X, y)
         print("> Cross validation score: %s" %
-              str(cross_val_score(untrained_model, X, to_categorical(y), cv=5)
-                  .mean()))
+              str(cross_val_score(untrained_model,
+                                  X_resampled,
+                                  to_categorical(y_resampled),
+                                  cv=5).mean()))
     print("> Training against training data...")
-    trained_model = untrained_model.fit(X_train, to_categorical(y_train)).model
+    (X_resampled, y_resampled) = fix_imbalance(X_train, y_train)
+    trained_model = untrained_model.fit(
+        X_resampled,
+        to_categorical(y_resampled)).model
     if verbose:
+        y_pred = [x.argmax() for x in trained_model.predict(X_test)]
         print("> Score against test data: %s" %
-              str(accuracy_score(
-                  [x.argmax() for x in trained_model.predict(X_test)],
-                  y_test)))
+              str(accuracy_score(y_pred, y_test['died'])))
+        plt.figure()
+        confusion_matrix = create_confusion_matrix(
+            y_test['died'],
+            y_pred,
+            [0, 1])
+        confusion_matrix_plot = sns.heatmap(
+            confusion_matrix,
+            annot=True,
+            cmap=sns.color_palette("GnBu_d"),
+            cbar=False,
+            xticklabels=['Lived', 'Died'],
+            yticklabels=['Lived', 'Died'])
+        figure = confusion_matrix_plot.get_figure()
+        plot_output_directory = confusion_plot_output_directory()
+        figure.savefig(plot_output_directory)
+        print("> Saved confusion matrix plot to: %s" %
+              plot_output_directory)
     return trained_model
+
+
+def confusion_plot_output_directory():
+    """Produce a suitable output directory to save the confusion plot to."""
+    template_confusion_plot_directory = "/tmp/confusion-matrix-%s.png"
+    return template_confusion_plot_directory % time.time()
+
+
+def sparse_matrix_get(matrix, x, y, default=None):
+    """Produce the value of MATRIX[X][Y].
+
+Where MATRIX is a sparse matrix (i.e. dictionary of dictionaries).  If
+the value isn't present then produce DEFAULT."""
+    if x not in matrix:
+        return default
+    if y not in matrix[x]:
+        return default
+    return matrix[x][y]
+
+
+def create_confusion_matrix(y_true, y_pred, y_values):
+    """Create a confusion matrix of Y_PRED against Y_TRUE.
+
+Y_VALUES specifies the possible classes which y, the label, could take
+on."""
+    matrix = {}
+    for (correct, predicted) in zip(y_true, y_pred):
+        if correct not in matrix:
+            matrix[correct] = {}
+        if predicted not in matrix[correct]:
+            matrix[correct][predicted] = 0
+        matrix[correct][predicted] = matrix[correct][predicted] + 1
+    array_matrix = []
+    for y_axis_value in y_values:
+        next_row = []
+        for x_axis_value in y_values:
+            value = sparse_matrix_get(matrix, x_axis_value, y_axis_value, 0)
+            next_row.append(value)
+        array_matrix.append(next_row)
+    return array_matrix
+
+
+def fix_imbalance(X, y):
+    """Fix imbalanced data in features X with labels Y.
+
+This is an important step because an over representation of a label
+means that it's easy to score high by guessing one label the whole
+time."""
+    cluster_centroids = ClusterCentroids()
+    return cluster_centroids.fit_resample(X, y)
 
 
 def train_model(relative_path):
     """Run our model on the data in 'input.csv'."""
     (X, y) = read_data(relative_path)
+    print(y['died'].value_counts())
     return train_and_test_neural_net(
         create_neural_network_model(),
         X.copy(),
